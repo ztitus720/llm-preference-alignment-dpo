@@ -1,0 +1,7 @@
+torch>=2.3
+transformers>=4.44
+trl>=0.12
+peft>=0.11
+datasets>=2.20
+accelerate>=0.32
+bitsandbytes>=0.43  # only needed for 4-bit / 8-bit loading on very limited GPU memory
