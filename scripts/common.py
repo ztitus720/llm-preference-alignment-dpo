@@ -8,18 +8,18 @@ def pick_device() -> str:
 
 def pick_dtype(device: str | None = None):
     """
-    bf16 only where the GPU actually supports it.
+    bf16 only on hardware that actually has bf16 units — compute capability
+    8.0 (Ampere) and up.
 
-    A free-tier Colab T4 is Turing (sm_75) and has NO bf16 support, so the
-    previous unconditional bf16=True was a guaranteed crash there. A100/L4 are
-    Ampere or newer and do support it.
+    NOT `torch.cuda.is_bf16_supported()`: recent PyTorch returns True for it on
+    a T4, because it counts slow software emulation as support. A T4 is Turing
+    (sm_75) and must run fp16.
     """
     device = device or pick_device()
     if device != "cuda":
         return torch.float32
-    if torch.cuda.is_bf16_supported():
-        return torch.bfloat16
-    return torch.float16
+    major, _minor = torch.cuda.get_device_capability()
+    return torch.bfloat16 if major >= 8 else torch.float16
 
 
 def dtype_flags(dtype) -> dict:
