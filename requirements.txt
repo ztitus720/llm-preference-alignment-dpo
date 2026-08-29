@@ -1,7 +1,10 @@
+# Versions verified end-to-end (data build -> DPO train -> eval) on 2026-08-29.
+# The DPOTrainer signature has moved between TRL releases, so these are pinned
+# to ranges that were actually run rather than left open.
 torch>=2.3
-transformers>=4.44
-trl>=0.12
-peft>=0.11
-datasets>=2.20
-accelerate>=0.32
-bitsandbytes>=0.43  # only needed for 4-bit / 8-bit loading on very limited GPU memory
+transformers>=4.46,<6
+trl>=0.12,<2
+peft>=0.11,<1
+datasets>=2.20,<6
+accelerate>=0.32,<2
+bitsandbytes>=0.43  # only for 4-bit / 8-bit loading on very limited GPU memory

@@ -2,17 +2,14 @@
 Build a small preference dataset (chosen/rejected pairs) for DPO training.
 
 Two modes:
-  --source hf        Sample N pairs from an existing open preference dataset
-                      (default: trl-lib/ultrafeedback_binarized), already in
-                      chosen/rejected form. Fastest way to get a working
-                      pipeline end to end before investing in your own data.
-  --source synthetic  Build your own pairs from a list of prompts, using one
-                      model (or two decoding settings of the same model) to
-                      produce a "better" and a "worse" answer, which you then
-                      keep or discard after a quick manual/rule-based check.
-                      This is the version worth doing if you want the
-                      "high-quality data synthesis" story for interviews,
-                      not just "I ran a script on someone else's dataset".
+  --source hf         Sample N pairs from an existing open preference dataset
+                      (default: trl-lib/ultrafeedback_binarized). Fastest way
+                      to get the pipeline working end to end.
+  --source synthetic  Self-sample one model twice per prompt at different
+                      temperatures and label chosen/rejected with a rubric.
+                      This is the version worth doing for the data-synthesis
+                      story; the rubric is deliberately simple and is the part
+                      you should replace with a real judge.
 
 Output: data/preference_pairs.jsonl, one {"prompt", "chosen", "rejected"} per
 line, directly loadable by train_dpo.py.
@@ -29,47 +26,68 @@ from pathlib import Path
 OUT_PATH = Path(__file__).resolve().parent.parent / "data" / "preference_pairs.jsonl"
 
 
-def from_hf(n: int, dataset_name: str, seed: int) -> list[dict]:
+def _last_assistant_text(x):
+    """Conversational columns are message lists; plain ones are already strings."""
+    if isinstance(x, list) and x:
+        last = x[-1]
+        return last["content"] if isinstance(last, dict) else str(last)
+    return x if isinstance(x, str) else None
+
+
+def _first_user_text(x):
+    if isinstance(x, list):
+        for msg in x:
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                return msg["content"]
+    return None
+
+
+def from_hf(n: int, dataset_name: str, seed: int, split: str = "train") -> list[dict]:
     from datasets import load_dataset
 
-    ds = load_dataset(dataset_name, split="train")
+    ds = load_dataset(dataset_name, split=split)
     ds = ds.shuffle(seed=seed).select(range(min(n, len(ds))))
 
-    pairs = []
+    pairs, skipped = [], 0
     for row in ds:
-        # trl-lib/ultrafeedback_binarized stores chosen/rejected as chat-style
-        # message lists; normalise to plain (prompt, chosen, rejected) strings.
+        chosen_msgs, rejected_msgs = row.get("chosen"), row.get("rejected")
+
+        # trl-lib/ultrafeedback_binarized ships NO "prompt" column — the prompt
+        # is the user turn inside the chosen/rejected message lists. Reading
+        # row["prompt"] there yields None for every row, which silently poisons
+        # the whole dataset, so fall back to the first user message.
         prompt = row.get("prompt")
-        chosen = row.get("chosen")
-        rejected = row.get("rejected")
+        if not isinstance(prompt, str) or not prompt.strip():
+            prompt = _first_user_text(chosen_msgs) or _first_user_text(rejected_msgs)
 
-        def last_text(x):
-            if isinstance(x, list):
-                return x[-1]["content"] if x and isinstance(x[-1], dict) else str(x[-1])
-            return x
+        chosen = _last_assistant_text(chosen_msgs)
+        rejected = _last_assistant_text(rejected_msgs)
 
-        pairs.append({
-            "prompt": prompt if isinstance(prompt, str) else last_text(prompt),
-            "chosen": last_text(chosen),
-            "rejected": last_text(rejected),
-        })
+        if not (prompt and chosen and rejected) or chosen == rejected:
+            skipped += 1
+            continue
+        pairs.append({"prompt": prompt, "chosen": chosen, "rejected": rejected})
+
+    if skipped:
+        print(f"[warn] skipped {skipped} rows with missing/degenerate fields")
+    if not pairs:
+        raise SystemExit(
+            f"No usable pairs from {dataset_name}. Columns seen: {ds.column_names}"
+        )
     return pairs
 
 
 def from_synthetic(n: int, model_name: str, seed: int) -> list[dict]:
     """
-    Generates chosen/rejected pairs by sampling the SAME model twice per
-    prompt with different decoding settings (greedy/low-temperature vs.
-    high-temperature), then using a simple length + keyword heuristic as a
-    stand-in "rubric" to decide which is chosen vs rejected.
+    Generate chosen/rejected pairs by sampling the SAME model twice per prompt
+    (low vs. high temperature), then scoring both with a simple rubric.
 
-    This is intentionally simple — it is a starting point, not a finished
-    reward model. Swap `score_response` for something better (an LLM judge,
-    a rubric checklist, human labels) before trusting the labels for a real
-    write-up.
+    The rubric is a starting point, not a reward model. Swap `score_response`
+    for an LLM judge or a rubric checklist before trusting the labels.
     """
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    from common import chat_encode, load_model, load_tokenizer, pick_device
 
     random.seed(seed)
 
@@ -87,40 +105,41 @@ def from_synthetic(n: int, model_name: str, seed: int) -> list[dict]:
     ]
     prompts = (PROMPTS * ((n // len(PROMPTS)) + 1))[:n]
 
-    tok = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
+    device = pick_device()
+    tok = load_tokenizer(model_name)
+    model = load_model(model_name, device=device)
     model.eval()
 
     def generate(prompt: str, temperature: float) -> str:
-        messages = [{"role": "user", "content": prompt}]
-        inputs = tok.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt")
+        enc = chat_encode(tok, prompt, device)
         with torch.no_grad():
             out = model.generate(
-                inputs,
+                **enc,
                 max_new_tokens=120,
                 do_sample=temperature > 0,
                 temperature=max(temperature, 1e-4),
                 top_p=0.95,
-                pad_token_id=tok.eos_token_id,
+                pad_token_id=tok.pad_token_id or tok.eos_token_id,
             )
-        return tok.decode(out[0][inputs.shape[1]:], skip_special_tokens=True).strip()
+        return tok.decode(out[0][enc["input_ids"].shape[1]:], skip_special_tokens=True).strip()
 
     def score_response(text: str) -> float:
-        # Placeholder rubric: penalise near-empty or wildly long answers,
-        # reward answers that end with proper punctuation (crude proxy for
-        # "didn't get cut off / ramble"). Replace this with a real judge.
+        # Placeholder rubric: penalise near-empty or rambling answers, reward
+        # answers that end on proper punctuation (crude "wasn't cut off" proxy).
         length_score = -abs(len(text.split()) - 60) / 60
         ends_clean = 1.0 if text.rstrip().endswith((".", "!", "?")) else -0.5
         return length_score + ends_clean
 
     pairs = []
-    for prompt in prompts:
+    for i, prompt in enumerate(prompts, 1):
         a = generate(prompt, temperature=0.2)
         b = generate(prompt, temperature=1.0)
-        if a == b:
+        if not a or not b or a == b:
             continue
-        (chosen, rejected) = (a, b) if score_response(a) >= score_response(b) else (b, a)
+        chosen, rejected = (a, b) if score_response(a) >= score_response(b) else (b, a)
         pairs.append({"prompt": prompt, "chosen": chosen, "rejected": rejected})
+        if i % 10 == 0:
+            print(f"[synthetic] {i}/{len(prompts)} prompts sampled")
     return pairs
 
 
@@ -129,23 +148,27 @@ def main():
     ap.add_argument("--source", choices=["hf", "synthetic"], default="hf")
     ap.add_argument("--n", type=int, default=300)
     ap.add_argument("--dataset", default="trl-lib/ultrafeedback_binarized",
-                     help="HF dataset to sample from when --source hf")
+                    help="HF dataset to sample from when --source hf")
     ap.add_argument("--model", default="Qwen/Qwen2.5-1.5B-Instruct",
-                     help="Model to self-sample from when --source synthetic")
+                    help="Model to self-sample from when --source synthetic")
+    ap.add_argument("--split", default="train",
+                    help='dataset split; HuggingFaceH4/ultrafeedback_binarized uses "train_prefs"')
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--out", default=str(OUT_PATH))
     args = ap.parse_args()
 
     if args.source == "hf":
-        pairs = from_hf(args.n, args.dataset, args.seed)
+        pairs = from_hf(args.n, args.dataset, args.seed, args.split)
     else:
         pairs = from_synthetic(args.n, args.model, args.seed)
 
-    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with OUT_PATH.open("w", encoding="utf-8") as f:
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", encoding="utf-8") as f:
         for row in pairs:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    print(f"Wrote {len(pairs)} preference pairs to {OUT_PATH}")
+    print(f"Wrote {len(pairs)} preference pairs to {out_path}")
 
 
 if __name__ == "__main__":
