@@ -145,8 +145,9 @@ margin 是 −0.0016；更关键的是，隐式奖励准确率的两个独立估
 `run_dpo_colab.ipynb` 端到端跑的是 A 组。B 组只需给 `train_dpo.py` 传
 `--epochs 3 --lr 5e-5 --max_length 768`，给 `evaluate.py` 传 `--max_length 1024`。
 
-当前 Colab 镜像上还需要一个环境修复，notebook 的安装 cell 里尚未包含：`peft` 0.20.0
-拒绝与预装的 `torchao` 0.10.0 共存——
+当前 Colab 镜像上还需要一个环境修复，notebook 的安装 cell 已经包含它；如果你不用
+notebook、直接跑脚本，记得自己先执行一次。`peft` 0.20.0 拒绝与预装的 `torchao`
+0.10.0 共存——
 
 ```
 ImportError: Found an incompatible version of torchao. Found version 0.10.0,
@@ -362,9 +363,10 @@ Two further observations worth keeping:
 `--epochs 3 --lr 5e-5 --max_length 768` to `train_dpo.py` and `--max_length
 1024` to `evaluate.py`.
 
-One environment fix is needed on current Colab images and is not yet in the
-notebook's install cell: `peft` 0.20.0 refuses to load against the preinstalled
-`torchao` 0.10.0 —
+One environment fix is needed on current Colab images. The notebook's install
+cell already applies it; if you run the scripts outside the notebook, apply it
+yourself. `peft` 0.20.0 refuses to load against the preinstalled `torchao`
+0.10.0 —
 
 ```
 ImportError: Found an incompatible version of torchao. Found version 0.10.0,
