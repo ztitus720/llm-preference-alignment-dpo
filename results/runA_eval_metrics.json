@@ -1,0 +1,11 @@
+{
+  "n_pairs": 40,
+  "base_preference_accuracy": 0.45,
+  "tuned_preference_accuracy": 0.45,
+  "base_preference_accuracy_len_norm": 0.45,
+  "tuned_preference_accuracy_len_norm": 0.45,
+  "dpo_implicit_reward_accuracy": 0.425,
+  "dpo_implicit_reward_margin": -0.001623479127883911,
+  "mean_len_chosen": 208.125,
+  "mean_len_rejected": 208.125
+}

@@ -1,10 +1,12 @@
-# Versions verified end-to-end (data build -> DPO train -> eval) on 2026-08-29.
-# The DPOTrainer signature has moved between TRL releases, so these are pinned
-# to ranges that were actually run rather than left open.
+# Exact versions verified end-to-end (data build -> DPO train -> eval) on Colab T4.
+# Pinned exactly rather than by range: Colab ships a preinstalled peft that
+# satisfies a range like ">=0.11,<1", so pip leaves it in place and it then
+# fails against a newer trl inside get_peft_model. These are the versions the
+# notebook installs and verifies.
 torch>=2.3
-transformers>=4.46,<6
-trl>=0.12,<2
-peft>=0.11,<1
-datasets>=2.20,<6
-accelerate>=0.32,<2
+transformers==5.16.1
+trl==1.12.0
+peft==0.20.0
+datasets==5.0.1
+accelerate==1.14.0
 bitsandbytes>=0.43  # only for 4-bit / 8-bit loading on very limited GPU memory
